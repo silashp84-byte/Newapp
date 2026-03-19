@@ -13,25 +13,27 @@ import { motion, AnimatePresence } from 'motion/react';
 import { MarketData, Trade, FundamentalAnalysis } from '../types';
 import { analyzeMarket } from '../services/geminiService';
 
-const SYMBOLS = ['BTC/USD', 'ETH/USD', 'EUR/USD', 'AAPL', 'TSLA'];
+const SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'EUR/USD', 'AAPL', 'TSLA'];
 
 export default function TradingDashboard() {
   const [marketData, setMarketData] = useState<MarketData[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = useState(SYMBOLS[0]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [isAutoTrading, setIsAutoTrading] = useState(false);
-  const [analysis, setAnalysis] = useState<FundamentalAnalysis | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyses, setAnalyses] = useState<Record<string, FundamentalAnalysis>>({});
+  const [analyzingSymbols, setAnalyzingSymbols] = useState<Set<string>>(new Set());
   const [balance, setBalance] = useState(10000);
+  const [viewMode, setViewMode] = useState<'GRID' | 'SINGLE'>('GRID');
+  const [selectedSymbol, setSelectedSymbol] = useState(SYMBOLS[0]);
 
   // Mock Market Data Stream
   useEffect(() => {
     const interval = setInterval(() => {
       setMarketData(prev => {
-        const newData = SYMBOLS.map(symbol => {
+        return SYMBOLS.map(symbol => {
           const last = prev.find(d => d.symbol === symbol);
-          const basePrice = last?.price || (symbol.includes('USD') ? 50000 : 150);
-          const change = (Math.random() - 0.5) * (basePrice * 0.002);
+          const basePrice = last?.price || (symbol.includes('USD') || symbol.includes('/') ? (symbol.startsWith('BTC') ? 65000 : symbol.startsWith('ETH') ? 3500 : 150) : 150);
+          const volatility = symbol.includes('BTC') || symbol.includes('SOL') ? 0.005 : 0.002;
+          const change = (Math.random() - 0.5) * (basePrice * volatility);
           const newPrice = basePrice + change;
           
           return {
@@ -43,18 +45,15 @@ export default function TradingDashboard() {
             timestamp: Date.now()
           };
         });
-        return newData;
       });
-    }, 2000);
+    }, 1000); // Faster updates
 
     return () => clearInterval(interval);
   }, []);
 
-  const currentData = marketData.find(d => d.symbol === selectedSymbol);
-
   const executeTrade = useCallback(async (type: 'BUY' | 'SELL', market: MarketData, analysisResult: FundamentalAnalysis) => {
-    const risk = market.price * 0.01; // 1% risk
-    const reward = risk * 2; // 2:1 ratio
+    const risk = market.price * 0.005; // 0.5% risk for faster turnover
+    const reward = risk * 2; // Strict 2:1
     
     const stopLoss = type === 'BUY' ? market.price - risk : market.price + risk;
     const takeProfit = type === 'BUY' ? market.price + reward : market.price - reward;
@@ -73,9 +72,9 @@ export default function TradingDashboard() {
 
     setTrades(prev => [newTrade, ...prev]);
 
-    // Simulate trade outcome after 5-10 seconds
+    // Faster simulation for "High Frequency" feel
     setTimeout(() => {
-      const win = Math.random() > 0.45; // 55% win rate simulation for "expert"
+      const win = Math.random() > 0.48; 
       const profit = win ? reward : -risk;
       
       setTrades(prev => prev.map(t => 
@@ -84,243 +83,406 @@ export default function TradingDashboard() {
           : t
       ));
       setBalance(prev => prev + profit);
-    }, 8000);
+    }, 5000);
   }, []);
 
-  const runAutoTrading = useCallback(async () => {
-    if (!currentData || !isAutoTrading || isAnalyzing) return;
+  const analyzeAllAssets = useCallback(async () => {
+    if (!isAutoTrading) return;
 
-    setIsAnalyzing(true);
-    const result = await analyzeMarket(currentData);
-    setAnalysis(result);
-    setIsAnalyzing(false);
+    // Parallel analysis for all symbols
+    SYMBOLS.forEach(async (symbol) => {
+      const data = marketData.find(d => d.symbol === symbol);
+      if (!data || analyzingSymbols.has(symbol)) return;
 
-    if (result.recommendation === 'BUY' || result.recommendation === 'SELL') {
-      executeTrade(result.recommendation as 'BUY' | 'SELL', currentData, result);
-    }
-  }, [currentData, isAutoTrading, isAnalyzing, executeTrade]);
+      setAnalyzingSymbols(prev => new Set(prev).add(symbol));
+      
+      try {
+        const result = await analyzeMarket(data);
+        setAnalyses(prev => ({ ...prev, [symbol]: result }));
+        
+        if (result.recommendation === 'BUY' || result.recommendation === 'SELL') {
+          // Check if already have an open trade for this symbol to avoid over-exposure
+          const hasOpenTrade = trades.some(t => t.symbol === symbol && t.status === 'OPEN');
+          if (!hasOpenTrade) {
+            executeTrade(result.recommendation as 'BUY' | 'SELL', data, result);
+          }
+        }
+      } finally {
+        setAnalyzingSymbols(prev => {
+          const next = new Set(prev);
+          next.delete(symbol);
+          return next;
+        });
+      }
+    });
+  }, [marketData, isAutoTrading, analyzingSymbols, trades, executeTrade]);
 
   useEffect(() => {
     if (isAutoTrading) {
-      const timer = setTimeout(runAutoTrading, 10000);
-      return () => clearTimeout(timer);
+      const timer = setInterval(analyzeAllAssets, 5000); // Analyze every 5s
+      return () => clearInterval(timer);
     }
-  }, [isAutoTrading, runAutoTrading]);
+  }, [isAutoTrading, analyzeAllAssets]);
 
   return (
-    <div className="min-h-screen p-6 trading-grid">
-      <header className="flex justify-between items-center mb-8 bg-[--color-card] p-4 rounded-2xl border border-[--color-border] shadow-2xl">
-        <div className="flex items-center gap-3">
-          <div className="bg-blue-500/20 p-2 rounded-lg">
-            <Zap className="text-blue-400" size={24} />
+    <div className="min-h-screen p-4 flex flex-col gap-4 relative overflow-hidden bg-[#08090a]">
+      <div className="scanline" />
+      
+      {/* Background Particles */}
+      {[...Array(15)].map((_, i) => (
+        <div 
+          key={i} 
+          className="data-particle" 
+          style={{ 
+            left: `${Math.random() * 100}%`, 
+            animationDelay: `${Math.random() * 20}s`,
+            animationDuration: `${15 + Math.random() * 10}s`
+          }} 
+        />
+      ))}
+
+      {/* Technical Overlays */}
+      <div className="absolute top-0 left-0 w-full h-full pointer-events-none opacity-20 z-0">
+        <div className="absolute top-10 left-10 font-mono text-[8px] text-emerald-500 uppercase tracking-[0.5em]">
+          System_Status: Optimal // Latency: 12ms
+        </div>
+        <div className="absolute bottom-10 right-10 font-mono text-[8px] text-emerald-500 uppercase tracking-[0.5em]">
+          Coordinate_Sync: {Math.random().toFixed(4)} : {Math.random().toFixed(4)}
+        </div>
+        <div className="absolute top-1/2 left-4 -translate-y-1/2 flex flex-col gap-1">
+          {[...Array(20)].map((_, i) => (
+            <div key={i} className="w-1 h-px bg-emerald-500/20" />
+          ))}
+        </div>
+      </div>
+      
+      <header className="flex justify-between items-center glass-panel p-4 rounded-2xl cyber-glow-cyan relative z-10">
+        <div className="flex items-center gap-5">
+          <div className="bg-emerald-500/10 p-2.5 rounded-xl border border-emerald-500/20">
+            <Zap className="text-emerald-400" size={22} />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">TradeMind AI</h1>
-            <p className="text-xs text-slate-500 uppercase tracking-widest font-mono">Expert Fundamentalist System</p>
+            <h1 className="text-xl font-bold tracking-tight text-white">TRADEMIND <span className="text-emerald-500 font-mono text-xs ml-1">PRO_TERMINAL</span></h1>
+            <p className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-medium">Neural Execution System // v3.2.0</p>
+          </div>
+          <div className="h-8 w-px bg-white/5 mx-2" />
+          <div className="flex bg-white/5 p-1 rounded-xl border border-white/5">
+            <button 
+              onClick={() => setViewMode('GRID')}
+              className={`px-4 py-1.5 rounded-lg text-[11px] font-bold transition-all ${viewMode === 'GRID' ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:text-slate-300'}`}
+            >
+              GRID
+            </button>
+            <button 
+              onClick={() => setViewMode('SINGLE')}
+              className={`px-4 py-1.5 rounded-lg text-[11px] font-bold transition-all ${viewMode === 'SINGLE' ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:text-slate-300'}`}
+            >
+              SINGLE
+            </button>
           </div>
         </div>
 
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-8">
           <div className="text-right">
-            <p className="text-xs text-slate-500 uppercase font-mono">Account Balance</p>
-            <p className="text-xl font-bold text-emerald-400">${balance.toLocaleString()}</p>
+            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest mb-0.5">Available Equity</p>
+            <p className="text-2xl font-bold text-white font-mono tracking-tighter">${balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
           </div>
           <button 
             onClick={() => setIsAutoTrading(!isAutoTrading)}
-            className={`flex items-center gap-2 px-6 py-2 rounded-xl font-bold transition-all ${
+            className={`flex items-center gap-2 px-8 py-3 rounded-2xl font-bold transition-all ${
               isAutoTrading 
-                ? 'bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30' 
-                : 'bg-emerald-500 text-black hover:bg-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)]'
+                ? 'bg-rose-500/10 text-rose-500 border border-rose-500/30 hover:bg-rose-500/20' 
+                : 'bg-emerald-500 text-black hover:bg-emerald-400 shadow-xl shadow-emerald-500/20'
             }`}
           >
-            {isAutoTrading ? <Square size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
-            {isAutoTrading ? 'STOP AUTO' : 'START AUTO'}
+            {isAutoTrading ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+            <span className="text-xs tracking-widest">{isAutoTrading ? 'STOP ENGINE' : 'ACTIVATE ENGINE'}</span>
           </button>
         </div>
       </header>
 
-      <main className="grid grid-cols-12 gap-6">
-        {/* Market Overview */}
-        <section className="col-span-12 lg:col-span-8 space-y-6">
-          <div className="bg-[--color-card] p-6 rounded-3xl border border-[--color-border] shadow-xl">
-            <div className="flex justify-between items-end mb-6">
-              <div>
-                <select 
-                  value={selectedSymbol}
-                  onChange={(e) => setSelectedSymbol(e.target.value)}
-                  className="bg-transparent text-2xl font-bold border-none focus:ring-0 cursor-pointer"
-                >
-                  {SYMBOLS.map(s => <option key={s} value={s} className="bg-[#141416]">{s}</option>)}
-                </select>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-3xl font-mono font-bold">${currentData?.price || '0.00'}</span>
-                  <span className={`text-sm font-bold flex items-center ${currentData && currentData.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {currentData && currentData.change >= 0 ? <TrendingUp size={14} className="mr-1" /> : <TrendingDown size={14} className="mr-1" />}
-                    {currentData?.changePercent}%
-                  </span>
-                </div>
-              </div>
-              <div className="flex gap-2">
-                {['1M', '5M', '15M', '1H', '1D'].map(t => (
-                  <button key={t} className="px-3 py-1 text-xs font-mono rounded-md hover:bg-white/5 border border-white/5 transition-colors">
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="h-[350px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={marketData.filter(d => d.symbol === selectedSymbol)}>
-                  <defs>
-                    <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#232326" vertical={false} />
-                  <XAxis dataKey="timestamp" hide />
-                  <YAxis domain={['auto', 'auto']} orientation="right" tick={{fill: '#475569', fontSize: 12}} axisLine={false} tickLine={false} />
-                  <Tooltip 
-                    contentStyle={{backgroundColor: '#141416', border: '1px solid #232326', borderRadius: '12px'}}
-                    itemStyle={{color: '#3b82f6'}}
-                  />
-                  <Area type="monotone" dataKey="price" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorPrice)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* AI Analysis Card */}
-          <div className="bg-[--color-card] p-6 rounded-3xl border border-[--color-border] shadow-xl relative overflow-hidden">
-            <div className="flex items-center gap-2 mb-4">
-              <Activity className="text-blue-400" size={20} />
-              <h2 className="font-bold">AI Fundamental Analysis</h2>
-              {isAnalyzing && (
-                <motion.div 
-                  animate={{ opacity: [0.5, 1, 0.5] }}
-                  transition={{ repeat: Infinity, duration: 1.5 }}
-                  className="text-xs text-blue-400 font-mono ml-auto"
-                >
-                  ANALYZING MARKET...
-                </motion.div>
-              )}
-            </div>
-
-            <AnimatePresence mode="wait">
-              {analysis ? (
-                <motion.div 
-                  key="analysis"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  className="grid grid-cols-1 md:grid-cols-3 gap-6"
-                >
-                  <div className="col-span-2 space-y-4">
-                    <div className="flex items-center gap-3">
-                      <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                        analysis.sentiment === 'BULLISH' ? 'bg-emerald-500/20 text-emerald-400' : 
-                        analysis.sentiment === 'BEARISH' ? 'bg-red-500/20 text-red-400' : 'bg-slate-500/20 text-slate-400'
-                      }`}>
-                        {analysis.sentiment}
-                      </span>
-                      <span className="text-slate-500 text-sm">Score: {analysis.score}/100</span>
+      <div className="flex-1 grid grid-cols-12 gap-4 overflow-hidden relative z-10">
+        {/* Main View Area */}
+        <main className="col-span-12 lg:col-span-9 overflow-y-auto pr-1 custom-scrollbar">
+          {viewMode === 'GRID' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {SYMBOLS.map(symbol => {
+                const data = marketData.find(d => d.symbol === symbol);
+                const analysis = analyses[symbol];
+                const isAnalyzing = analyzingSymbols.has(symbol);
+                
+                return (
+                  <motion.div 
+                    key={symbol}
+                    layout
+                    className="glass-panel p-5 rounded-3xl hover:border-emerald-500/30 transition-all group relative overflow-hidden"
+                  >
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <h3 className="font-bold text-xs text-slate-500 uppercase tracking-widest mb-1">{symbol}</h3>
+                        <p className="text-2xl font-bold text-white font-mono tracking-tighter">${data?.price?.toLocaleString() || '0.00'}</p>
+                      </div>
+                      <div className={`text-[11px] font-bold px-2.5 py-1 rounded-lg ${data && data.change >= 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
+                        {data && data.change >= 0 ? '+' : ''}{data?.changePercent}%
+                      </div>
                     </div>
-                    <p className="text-slate-300 text-sm leading-relaxed italic">
-                      "{analysis.reasoning}"
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {analysis.keyFactors.map((f, i) => (
-                        <span key={i} className="text-[10px] bg-white/5 px-2 py-1 rounded border border-white/5 text-slate-400 uppercase font-mono">
-                          {f}
-                        </span>
-                      ))}
+
+                    <div className="h-28 w-full mb-4">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={marketData.filter(d => d.symbol === symbol)}>
+                          <defs>
+                            <linearGradient id={`grad-${symbol}`} x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor={data && data.change >= 0 ? '#10b981' : '#f43f5e'} stopOpacity={0.2}/>
+                              <stop offset="100%" stopColor={data && data.change >= 0 ? '#10b981' : '#f43f5e'} stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <Area 
+                            type="monotone" 
+                            dataKey="price" 
+                            stroke={data && data.change >= 0 ? '#10b981' : '#f43f5e'} 
+                            strokeWidth={2} 
+                            fillOpacity={1} 
+                            fill={`url(#grad-${symbol})`} 
+                            isAnimationActive={false}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    <div className="bg-white/5 p-4 rounded-2xl border border-white/5 min-h-[90px] flex flex-col justify-center">
+                      {isAnalyzing ? (
+                        <div className="flex items-center justify-center gap-3 text-[11px] text-emerald-400 font-bold uppercase tracking-widest">
+                          <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}>
+                            <Activity size={14} />
+                          </motion.div>
+                          Processing...
+                        </div>
+                      ) : analysis ? (
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center">
+                            <span className={`text-[10px] font-bold uppercase tracking-widest ${analysis.sentiment === 'BULLISH' ? 'text-emerald-400' : analysis.sentiment === 'BEARISH' ? 'text-rose-400' : 'text-slate-500'}`}>
+                              {analysis.sentiment}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">CONF: {analysis.score}%</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed font-medium italic">
+                            "{analysis.reasoning}"
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center gap-2 text-[11px] text-slate-600 font-bold uppercase tracking-widest">
+                          <Activity size={14} className="opacity-20" />
+                          Standby
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="grid grid-cols-12 gap-4 h-full">
+              <div className="col-span-12 xl:col-span-8 space-y-4">
+                <div className="glass-panel p-8 rounded-[2.5rem] relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-6 opacity-5">
+                    <Zap size={200} />
+                  </div>
+                  
+                  <div className="flex justify-between items-end mb-8 relative z-10">
+                    <div>
+                      <div className="flex items-center gap-3 mb-2">
+                        <select 
+                          value={selectedSymbol}
+                          onChange={(e) => setSelectedSymbol(e.target.value)}
+                          className="bg-transparent text-4xl font-bold border-none focus:ring-0 cursor-pointer text-white tracking-tighter"
+                        >
+                          {SYMBOLS.map(s => <option key={s} value={s} className="bg-[#0f1113]">{s}</option>)}
+                        </select>
+                        <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-[10px] font-bold text-emerald-400 tracking-widest">LIVE</div>
+                      </div>
+                      <p className="text-slate-500 text-sm font-medium uppercase tracking-widest flex items-center gap-2">
+                        <Activity size={14} /> Market Real-time Execution
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-6xl font-mono font-bold text-white tracking-tighter">
+                        ${marketData.find(d => d.symbol === selectedSymbol)?.price?.toLocaleString() || '0.00'}
+                      </p>
+                      <p className={`text-sm font-bold mt-1 ${marketData.find(d => d.symbol === selectedSymbol)?.change! >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {marketData.find(d => d.symbol === selectedSymbol)?.change! >= 0 ? '▲' : '▼'} {marketData.find(d => d.symbol === selectedSymbol)?.changePercent}%
+                      </p>
                     </div>
                   </div>
-                  <div className="bg-white/5 p-4 rounded-2xl border border-white/5 flex flex-col justify-center items-center text-center">
-                    <p className="text-xs text-slate-500 uppercase font-mono mb-2">Recommendation</p>
-                    <p className={`text-2xl font-black ${
-                      analysis.recommendation === 'BUY' ? 'text-emerald-400' : 
-                      analysis.recommendation === 'SELL' ? 'text-red-400' : 'text-slate-400'
-                    }`}>
-                      {analysis.recommendation}
-                    </p>
-                    <div className="mt-4 flex items-center gap-1 text-[10px] text-slate-500">
-                      <ShieldCheck size={12} />
-                      <span>2:1 Risk/Reward Ratio Applied</span>
-                    </div>
-                  </div>
-                </motion.div>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-12 text-slate-600">
-                  <Info size={40} className="mb-2 opacity-20" />
-                  <p>Aguardando próxima janela de análise...</p>
-                </div>
-              )}
-            </AnimatePresence>
-          </div>
-        </section>
 
-        {/* Sidebar: Recent Trades */}
-        <aside className="col-span-12 lg:col-span-4 space-y-6">
-          <div className="bg-[--color-card] p-6 rounded-3xl border border-[--color-border] shadow-xl h-full flex flex-col">
-            <div className="flex items-center gap-2 mb-6">
-              <History className="text-slate-400" size={20} />
-              <h2 className="font-bold">Live Operations</h2>
-              <span className="ml-auto text-[10px] bg-white/5 px-2 py-1 rounded font-mono text-slate-500">
-                {trades.length} TOTAL
+                  <div className="h-[400px] relative z-10">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={marketData.filter(d => d.symbol === selectedSymbol)}>
+                        <defs>
+                          <linearGradient id="mainGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#10b981" stopOpacity={0.3}/>
+                            <stop offset="100%" stopColor="#10b981" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e2124" vertical={false} />
+                        <XAxis dataKey="timestamp" hide />
+                        <YAxis domain={['auto', 'auto']} orientation="right" tick={{fill: '#475569', fontSize: 11}} axisLine={false} tickLine={false} />
+                        <Tooltip 
+                          contentStyle={{backgroundColor: '#0f1113', border: '1px solid #1e2124', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)'}}
+                          itemStyle={{color: '#10b981', fontWeight: 'bold'}}
+                        />
+                        <Area 
+                          type="monotone" 
+                          dataKey="price" 
+                          stroke="#10b981" 
+                          strokeWidth={3} 
+                          fillOpacity={1} 
+                          fill="url(#mainGrad)" 
+                          isAnimationActive={false}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-4">
+                  {[
+                    { label: 'Volatility', value: 'High', color: 'text-emerald-400' },
+                    { label: 'Liquidity', value: 'Extreme', color: 'text-emerald-400' },
+                    { label: 'Trend', value: 'Bullish', color: 'text-emerald-400' }
+                  ].map((stat, i) => (
+                    <div key={i} className="glass-panel p-4 rounded-2xl">
+                      <p className="text-[10px] text-slate-500 uppercase font-bold tracking-widest mb-1">{stat.label}</p>
+                      <p className={`text-lg font-bold ${stat.color}`}>{stat.value}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="col-span-12 xl:col-span-4 space-y-4">
+                <div className="glass-panel p-6 rounded-[2rem] h-full flex flex-col">
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                    <BarChart3 size={14} /> Order Depth
+                  </h3>
+                  <div className="flex-1 space-y-1 font-mono text-[11px]">
+                    {[...Array(12)].map((_, i) => (
+                      <div key={i} className="flex justify-between items-center group cursor-default">
+                        <span className="text-rose-500/70 group-hover:text-rose-400 transition-colors">{(100 + Math.random() * 5).toFixed(2)}</span>
+                        <div className="flex-1 mx-4 h-1 bg-rose-500/5 rounded-full overflow-hidden">
+                          <div className="h-full bg-rose-500/20" style={{ width: `${Math.random() * 100}%` }} />
+                        </div>
+                        <span className="text-slate-500">{(Math.random() * 10).toFixed(3)}</span>
+                      </div>
+                    ))}
+                    <div className="py-3 border-y border-white/5 my-2 text-center text-white font-bold text-sm">
+                      SPREAD: 0.002
+                    </div>
+                    {[...Array(12)].map((_, i) => (
+                      <div key={i} className="flex justify-between items-center group cursor-default">
+                        <span className="text-emerald-500/70 group-hover:text-emerald-400 transition-colors">{(99 - Math.random() * 5).toFixed(2)}</span>
+                        <div className="flex-1 mx-4 h-1 bg-emerald-500/5 rounded-full overflow-hidden">
+                          <div className="h-full bg-emerald-500/20" style={{ width: `${Math.random() * 100}%` }} />
+                        </div>
+                        <span className="text-slate-500">{(Math.random() * 10).toFixed(3)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </main>
+
+        {/* Sidebar: Operations & Stats */}
+        <aside className="col-span-12 lg:col-span-3 flex flex-col gap-4 overflow-hidden">
+          <div className="glass-panel p-5 rounded-3xl flex-1 flex flex-col overflow-hidden">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="bg-white/5 p-2 rounded-lg">
+                <History className="text-slate-400" size={16} />
+              </div>
+              <h2 className="font-bold text-xs uppercase tracking-[0.2em] text-slate-400">Execution Log</h2>
+              <span className="ml-auto text-[10px] font-bold bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full">
+                {trades.filter(t => t.status === 'OPEN').length} ACTIVE
               </span>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar">
               <AnimatePresence initial={false}>
                 {trades.map((trade) => (
                   <motion.div 
                     key={trade.id}
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
-                    className="p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10 transition-all"
+                    className={`p-4 rounded-2xl border transition-all relative overflow-hidden group ${
+                      trade.status === 'OPEN' 
+                        ? 'bg-white/5 border-white/5' 
+                        : trade.profit! >= 0 
+                          ? 'bg-emerald-500/5 border-emerald-500/10' 
+                          : 'bg-rose-500/5 border-rose-500/10'
+                    }`}
                   >
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <span className="font-bold text-sm">{trade.symbol}</span>
-                        <span className={`ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                          trade.type === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
-                        }`}>
-                          {trade.type}
-                        </span>
-                      </div>
-                      <span className={`text-xs font-mono ${trade.status === 'OPEN' ? 'text-blue-400 animate-pulse' : 'text-slate-500'}`}>
-                        {trade.status}
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="font-bold text-xs text-white">{trade.symbol}</span>
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md ${trade.type === 'BUY' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
+                        {trade.type}
                       </span>
                     </div>
-                    
-                    <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-slate-500 mb-3">
-                      <div>Entry: ${trade.entryPrice}</div>
-                      <div>SL: ${trade.stopLoss.toFixed(2)}</div>
-                      <div>TP: ${trade.takeProfit.toFixed(2)}</div>
-                      {trade.exitPrice && <div>Exit: ${trade.exitPrice.toFixed(2)}</div>}
+                    <div className="flex justify-between items-end">
+                      <div className="text-[10px] text-slate-500 font-mono">
+                        ENTRY: ${trade.entryPrice.toLocaleString()}
+                      </div>
+                      {trade.status === 'CLOSED' && (
+                        <div className={`text-sm font-bold font-mono ${trade.profit! >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {trade.profit! >= 0 ? '+' : ''}${trade.profit?.toFixed(2)}
+                        </div>
+                      )}
                     </div>
-
-                    {trade.status === 'CLOSED' && (
-                      <div className={`text-sm font-bold flex items-center justify-end ${trade.profit! >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {trade.profit! >= 0 ? '+' : ''}${trade.profit?.toFixed(2)}
+                    {/* Progress bar for open trades */}
+                    {trade.status === 'OPEN' && (
+                      <div className="absolute bottom-0 left-0 h-0.5 bg-emerald-500/20 w-full">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: '100%' }}
+                          transition={{ duration: 5, ease: "linear" }}
+                          className="h-full bg-emerald-500"
+                        />
                       </div>
                     )}
                   </motion.div>
                 ))}
               </AnimatePresence>
-              
-              {trades.length === 0 && (
-                <div className="text-center py-20 text-slate-600">
-                  <BarChart3 size={40} className="mx-auto mb-2 opacity-20" />
-                  <p className="text-sm italic">Nenhuma operação aberta.</p>
-                </div>
-              )}
+            </div>
+          </div>
+
+          <div className="bg-emerald-500 p-6 rounded-3xl text-black shadow-2xl shadow-emerald-500/20 relative overflow-hidden group">
+            <div className="absolute -right-4 -top-4 opacity-10 group-hover:scale-110 transition-transform">
+              <BarChart3 size={100} />
+            </div>
+            <div className="flex items-center gap-2 mb-4 relative z-10">
+              <BarChart3 size={18} />
+              <h3 className="text-[11px] font-bold uppercase tracking-[0.2em]">Neural Performance</h3>
+            </div>
+            <div className="grid grid-cols-2 gap-4 relative z-10">
+              <div>
+                <p className="text-[10px] font-bold uppercase opacity-60 mb-1">Win Rate</p>
+                <p className="text-2xl font-bold tracking-tighter">58.4%</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase opacity-60 mb-1">Avg Profit</p>
+                <p className="text-2xl font-bold tracking-tighter">+$42.10</p>
+              </div>
+            </div>
+            <div className="mt-4 pt-4 border-t border-black/10 relative z-10">
+              <div className="flex justify-between items-center text-[10px] font-bold uppercase opacity-60 mb-2">
+                <span>Efficiency</span>
+                <span>92%</span>
+              </div>
+              <div className="h-1.5 bg-black/10 rounded-full overflow-hidden">
+                <div className="h-full bg-black/40 rounded-full" style={{ width: '92%' }} />
+              </div>
             </div>
           </div>
         </aside>
-      </main>
+      </div>
     </div>
   );
 }
