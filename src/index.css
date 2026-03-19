@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-bg: #0a0a0b;
+  --color-card: #141416;
+  --color-border: #232326;
+  --color-accent: #3b82f6;
+  --color-success: #10b981;
+  --color-danger: #ef4444;
+}
+
+@layer base {
+  body {
+    @apply bg-[--color-bg] text-slate-200 font-sans;
+  }
+}
+
+.trading-grid {
+  background-size: 40px 40px;
+  background-image: radial-gradient(circle, #232326 1px, transparent 1px);
+}
