@@ -72,7 +72,7 @@ export default function TradingDashboard() {
 
     setTrades(prev => [newTrade, ...prev]);
 
-    // Faster simulation for "High Frequency" feel
+    // Trade simulation: Close after 90 seconds as requested
     setTimeout(() => {
       const win = Math.random() > 0.48; 
       const profit = win ? reward : -risk;
@@ -83,7 +83,7 @@ export default function TradingDashboard() {
           : t
       ));
       setBalance(prev => prev + profit);
-    }, 5000);
+    }, 90000);
   }, []);
 
   const analyzeAllAssets = useCallback(async () => {
@@ -119,7 +119,8 @@ export default function TradingDashboard() {
 
   useEffect(() => {
     if (isAutoTrading) {
-      const timer = setInterval(analyzeAllAssets, 5000); // Analyze every 5s
+      analyzeAllAssets(); // Initial analysis
+      const timer = setInterval(analyzeAllAssets, 90000); // Analyze every 90s
       return () => clearInterval(timer);
     }
   }, [isAutoTrading, analyzeAllAssets]);
@@ -442,7 +443,7 @@ export default function TradingDashboard() {
                         <motion.div 
                           initial={{ width: 0 }}
                           animate={{ width: '100%' }}
-                          transition={{ duration: 5, ease: "linear" }}
+                          transition={{ duration: 90, ease: "linear" }}
                           className="h-full bg-emerald-500"
                         />
                       </div>
